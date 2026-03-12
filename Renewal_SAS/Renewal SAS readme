@@ -1,0 +1,236 @@
+# SAS 9.4 License Renewal — Intune Deployment Script
+
+A PowerShell script for silently renewing an existing SAS 9.4 license via Microsoft Intune. No reinstallation required — copies a new license file, runs SAS Deployment Manager silently, and writes a registry key so Intune knows the renewal succeeded.
+
+---
+
+## Overview
+
+SAS 9.4 Teaching & Research licenses expire annually. Manually renewing across a fleet of managed endpoints is time-consuming and requires users to have elevated privileges they typically don't have. This script packages the entire renewal workflow into a single Intune-deployable unit.
+
+**What it does:**
+- Checks for an active user session before proceeding (defers if no user is present — Intune retries automatically)
+- Notifies the user that a license check is taking place
+- Validates that SAS 9.4 is actually installed before attempting renewal
+- Checks the registry to see if the license is already current (skips renewal if so, still writes detection key)
+- Copies the new license file and response file from the Intune package to a local working directory
+- Gracefully closes any running SAS processes with a 30-second user warning
+- Runs SAS Deployment Manager silently using a pre-configured response file
+- Writes a registry detection key so Intune reports the device as compliant
+- Logs everything locally and optionally to a network share
+- Writes key events to the Windows Event Log for monitoring visibility
+
+---
+
+## Environment
+
+| Component | Detail |
+|---|---|
+| Target OS | Windows 10 / Windows 11 |
+| Deployment tool | Microsoft Intune (Win32 app) |
+| Execution context | SYSTEM |
+| PowerShell version | 5.1 |
+| SAS version | SAS 9.4 (any maintenance release) |
+
+---
+
+## Prerequisites
+
+Before deploying, you need:
+
+1. **SAS 9.4 already installed** on target endpoints — this script renews a license, it does not install SAS. See [Install_SAS_2026](../Install_SAS_2026/) for the installation script.
+2. **A valid SAS license file** — `.txt` format, obtained from SAS Institute for the current year
+3. **A SAS Deployment Manager response file** (`.properties`) — pre-configured to point to the license file path and run silently
+4. **Intune Win32 app package** — wrap the script and supporting files using the Microsoft Win32 Content Prep Tool (`IntuneWinAppUtil.exe`)
+
+---
+
+## File Structure
+
+```
+Renewal_SAS_2026/
+├── Renewal_SAS_2026.ps1              # Main renewal script
+├── SAS_Renewal_2026.properties       # SASDM silent renewal response file
+└── SAS_94_TR_2026_License.txt        # SAS license file (not included — obtain from SAS)
+```
+
+---
+
+## Configuration
+
+At the top of `Renewal_SAS_2026.ps1`, update the `$Config` hashtable for your environment:
+
+```powershell
+$LicenseYear = "2026"   # Update each renewal cycle
+
+$Config = @{
+    LicenseFileName    = "SAS_94_TR_${LicenseYear}_License.txt"
+    LicenseDestination = "C:\ProgramData\...\SAS"        # Local working directory
+    LogsRootNetwork    = "\\...\Share\IT\...\Logs\SAS_Renewal_${LicenseYear}_Logs"
+    LogsRootLocal      = "C:\Intune_Logs\SAS_Renewal_${LicenseYear}_Logs"
+    RegistryPath       = "HKLM:\Software\...\SAS"        # Intune detection key location
+    RegistryValueName  = "LicenseYear"
+    EventLogSource     = "SAS-Renewal"
+}
+```
+
+### Response file
+
+The `SAS_Renewal_2026.properties` file must point to the license file at the **local working directory path**, not a network share — it runs after files are copied locally:
+
+```properties
+INSTALLER_UI=silent
+SAS_INSTALLATION_DATA=C:\ProgramData\...\SAS\SAS_94_TR_2026_License.txt
+QUIET_MODE=true
+```
+
+---
+
+## How It Works
+
+```
+Intune triggers script as SYSTEM
+        │
+        ▼
+Is an active user session present?
+   No  → Exit 2 (Intune retries on next check-in)
+   Yes ↓
+        │
+        ▼
+Notify user: license check in progress
+        │
+        ▼
+Is SAS 9.4 installed?
+   No  → Exit 1 (not a renewal candidate)
+   Yes ↓
+        │
+        ▼
+Is license already current year?
+   Yes → Write registry key, exit 0
+   No  ↓
+        │
+        ▼
+Copy license + response file from Intune package → local working directory
+        │
+        ▼
+Are SAS processes running?
+   Yes → Warn user (30-second countdown), gracefully close, force if needed
+   No  ↓
+        │
+        ▼
+Run sasdm.exe silently with response file
+        │
+        ▼
+Write registry detection key
+        │
+        ▼
+Notify user: renewal complete, log result, exit 0
+```
+
+---
+
+## Intune Configuration
+
+**App type:** Windows app (Win32)
+
+| Setting | Value |
+|---|---|
+| Install command | `powershell.exe -ExecutionPolicy Bypass -NoProfile -File Renewal_SAS_2026.ps1` |
+| Uninstall command | *(not applicable)* |
+| Install behavior | System |
+| Detection method | Registry |
+| Detection key | `HKEY_LOCAL_MACHINE\SOFTWARE\...\SAS` |
+| Detection value | `LicenseYear` = `2026` |
+| Restart behavior | No action |
+
+---
+
+## Exit Codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Success — renewal complete or license already current |
+| 1 | Failure — check logs for details |
+| 2 | Deferred — no active user session, Intune will retry |
+
+---
+
+## User Experience
+
+The user sees two messages delivered via `msg.exe` (using `sysnative` to handle Intune's 32-bit execution context):
+
+**On start:**
+> This computer is going to be checked for a 2026 SAS license and if not found, will follow steps to renew it.
+> -IT Support
+
+**If SAS is running:**
+> Your SAS license needs to be renewed. Any open SAS applications will be closed in 30 seconds or you may click OK now.
+> -IT Support
+
+**On completion:**
+> SAS was successfully renewed with the 2026 license.
+> -IT Support
+
+---
+
+## Logging
+
+The script writes to three locations:
+
+- **Local log:** `C:\Intune_Logs\SAS_Renewal_2026_Logs\`
+- **Network log:** `\\...\Logs\SAS_Renewal_2026_Logs\` *(falls back gracefully if unavailable)*
+- **Windows Event Log:** Application log, source `SAS-Renewal`
+
+Event IDs written:
+
+| ID | Event |
+|---|---|
+| 1000 | Script started |
+| 1001 | Renewal completed successfully |
+| 1002 | Renewal failed |
+| 1003 | Deferred — no active user session |
+| 1004 | Logging initialization failed |
+| 1005 | Network logging unavailable |
+| 1006 | Unhandled exception |
+
+Query from PowerShell:
+```powershell
+Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='SAS-Renewal'}
+```
+
+---
+
+## Known Issues & Solutions
+
+### msg.exe fails to reach the user
+**Problem:** Intune runs PowerShell in a 32-bit context, which cannot reach 64-bit session infrastructure.
+**Solution:** Script detects execution context via `[System.IntPtr]::Size` and uses `C:\Windows\sysnative\msg.exe` when running under Intune/SYSTEM.
+
+### SASDM exits with code -1
+**Problem:** The response file license path pointed to the network share, but `sasdm.exe` runs after local file copy.
+**Solution:** Ensure `SAS_INSTALLATION_DATA` in the `.properties` file points to the **local working directory**, not the network share.
+
+### Network share inaccessible from SYSTEM
+**Problem:** SYSTEM context cannot reach the share because only user accounts have been granted access.
+**Solution:** The license and response files are packaged directly into the Intune Win32 app — no network share access required at runtime. Network access is only used for log delivery, which fails gracefully.
+
+---
+
+## Version History
+
+| Version | Date | Summary |
+|---|---|---|
+| 1.1 | 2026-02 | Sysnative fix for msg.exe in 32-bit Intune context; improved session detection; Windows Event Log integration |
+| 1.0 | 2026-01 | Initial release |
+
+---
+
+## Related
+
+- [Install_SAS_2026](../Install_SAS_2026/) — full SAS 9.4 M9 silent installation script for endpoints that don't have SAS yet
+
+---
+
+## License
+
+This script is provided as-is for reference and adaptation. It is not affiliated with or endorsed by SAS Institute Inc. SAS® is a registered trademark of SAS Institute Inc.
