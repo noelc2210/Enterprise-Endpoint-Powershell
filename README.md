@@ -9,7 +9,7 @@ PowerShell scripts for enterprise endpoint management — Intune deployment, sil
 ### [Install_SAS_2026](./Install_SAS_2026/)
 Silent installation of SAS 9.4 M9 (Teaching & Research) via Microsoft Intune Win32 app deployment. Handles the full lifecycle: user prompting, 14GB file staging from a network share, silent execution via SAS Deployment Manager, and Intune registry detection.
 
-**Use this if:** You need to deploy SAS 9.4 M9 silently to managed Windows endpoints via Intune without user IT involvement.
+**Use this if:** You need to deploy SAS 9.4 M9 silently to managed Windows endpoints via Intune without user IT involvement. Solved issue with silent installs using sas-generated response file.
 
 > **Note:** A valid SAS license, source installation files (single ISO or depot format), and a configured response file are required. None are included in this repository — see the script README for details.
 
